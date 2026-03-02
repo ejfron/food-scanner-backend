@@ -10,11 +10,8 @@ from PIL import Image
 
 app = Flask(__name__)
 # Allow Capacitor origins and your Render domain
-CORS(app, origins=[
-    "capacitor://localhost",
-    "http://localhost",
-    "https://*.render.com"
-])
+CORS(app, origins="*")   # allow everything
+
 logging.basicConfig(level=logging.INFO)
 
 TESSERACT_CONFIG = r'--oem 3 --psm 6'
