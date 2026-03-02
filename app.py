@@ -10,7 +10,11 @@ from PIL import Image
 
 app = Flask(__name__)
 # Allow Capacitor origins and your Render domain
-CORS(app, origins="*")   # allow everything
+CORS(app, origins=[
+    "http://localhost:5173",
+    "capacitor://localhost",
+    "https://*.render.com"
+])
 
 logging.basicConfig(level=logging.INFO)
 
