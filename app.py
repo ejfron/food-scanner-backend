@@ -13,7 +13,8 @@ app = Flask(__name__)
 CORS(app, origins=[
     "http://localhost:5173",
     "capacitor://localhost",
-    "https://*.render.com"
+    "https://*.render.com",
+    "https://*.asse.devtunnels.ms"
 ])
 
 logging.basicConfig(level=logging.INFO)
