@@ -5,11 +5,21 @@ import time
 import os
 from io import BytesIO
 
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_compress import Compress
 from PIL import Image
 import pytesseract
+
+# ---------------------------
+# Optional compression – if flask_compress is installed, use it; otherwise skip
+# ---------------------------
+try:
+    from flask_compress import Compress
+    compress = Compress()
+    HAS_COMPRESS = True
+except ImportError:
+    HAS_COMPRESS = False
+    compress = None
 
 # ---------------------------
 # Configuration
@@ -23,24 +33,43 @@ TESSERACT_CONFIG = r'--oem 3 --psm 6'
 # ---------------------------
 app = Flask(__name__)
 
-# Enable Gzip compression for responses (smaller/faster downloads)
-Compress(app)
-
-# Flexible CORS – allows your Render domain, local dev, Capacitor, and dev tunnels
-# You can also set CORS_ORIGINS environment variable to add more origins
-ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://localhost:8080",
-    "capacitor://localhost",
-    "https://*.render.com",
-    "https://*.asse.devtunnels.ms",   # Azure dev tunnels
-    "file://",                         # for APK file access (Android)
-]
-# If you need to allow any origin during development, set env ALLOW_CORS_ALL=true
-if os.environ.get("ALLOW_CORS_ALL") == "true":
-    CORS(app, origins="*")
+# Enable Gzip compression only if flask_compress is available
+if HAS_COMPRESS:
+    compress.init_app(app)
+    app.config['COMPRESS_ALGORITHM'] = 'gzip'
+    app.config['COMPRESS_LEVEL'] = 6
+    app.config['COMPRESS_MIN_SIZE'] = 500
+    logging.info("Flask-Compress enabled")
 else:
-    CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
+    logging.warning("Flask-Compress not installed – responses will not be compressed")
+
+# ---------------------------
+# Dynamic CORS origin checker
+# ---------------------------
+def is_origin_allowed(origin):
+    # Always allow local development origins
+    allowed_exact = [
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "capacitor://localhost",
+        "file://",                     # for APK
+    ]
+    if origin in allowed_exact:
+        return True
+
+    # Allow any subdomain of asse.devtunnels.ms or render.com
+    if origin:
+        if origin.endswith(".asse.devtunnels.ms") or origin.endswith(".render.com"):
+            return True
+
+    # You can add your custom domain here if needed
+    # if origin == "https://yourdomain.com":
+    #     return True
+
+    return False
+
+# Apply CORS with the dynamic checker
+CORS(app, origins=is_origin_allowed, supports_credentials=True)
 
 # Logging setup
 logging.basicConfig(
@@ -136,10 +165,9 @@ def extract_nutrition():
     # Process OCR
     try:
         text, ocr_time = process_ocr(image_bytes)
-        # You could add confidence estimation here (optional)
         return jsonify({
             'ocrText': text,
-            'confidence': 0.9,  # placeholder, you can compute real confidence
+            'confidence': 0.9,  # placeholder, you can compute real confidence later
             'processingTime': ocr_time
         })
     except Exception as e:
