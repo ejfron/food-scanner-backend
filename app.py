@@ -5,14 +5,11 @@ import time
 import os
 from io import BytesIO
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask, request, jsonify, make_response
 from PIL import Image
 import pytesseract
 
-# ---------------------------
-# Optional compression – if flask_compress is installed, use it; otherwise skip
-# ---------------------------
+# Optional compression (skip if not installed)
 try:
     from flask_compress import Compress
     compress = Compress()
@@ -25,7 +22,7 @@ except ImportError:
 # Configuration
 # ---------------------------
 MAX_IMAGE_SIZE_MB = 10
-MAX_IMAGE_PIXELS = 2000   # resize larger images to this max dimension
+MAX_IMAGE_PIXELS = 2000
 TESSERACT_CONFIG = r'--oem 3 --psm 6'
 
 # ---------------------------
@@ -33,7 +30,7 @@ TESSERACT_CONFIG = r'--oem 3 --psm 6'
 # ---------------------------
 app = Flask(__name__)
 
-# Enable Gzip compression only if flask_compress is available
+# Enable Gzip compression if available
 if HAS_COMPRESS:
     compress.init_app(app)
     app.config['COMPRESS_ALGORITHM'] = 'gzip'
@@ -43,34 +40,6 @@ if HAS_COMPRESS:
 else:
     logging.warning("Flask-Compress not installed – responses will not be compressed")
 
-# ---------------------------
-# Dynamic CORS origin checker
-# ---------------------------
-def is_origin_allowed(origin):
-    # Always allow local development origins
-    allowed_exact = [
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "capacitor://localhost",
-        "file://",                     # for APK
-    ]
-    if origin in allowed_exact:
-        return True
-
-    # Allow any subdomain of asse.devtunnels.ms or render.com
-    if origin:
-        if origin.endswith(".asse.devtunnels.ms") or origin.endswith(".render.com"):
-            return True
-
-    # You can add your custom domain here if needed
-    # if origin == "https://yourdomain.com":
-    #     return True
-
-    return False
-
-# Apply CORS with the dynamic checker
-CORS(app, origins=is_origin_allowed, supports_credentials=True)
-
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -79,55 +48,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------
-# Utility Functions
+# CORS Configuration (Manual)
 # ---------------------------
-def resize_image_if_needed(image, max_dimension=MAX_IMAGE_PIXELS):
-    """Resize image if either dimension exceeds max_dimension, preserving aspect ratio."""
-    if max(image.size) <= max_dimension:
-        return image
-    ratio = max_dimension / float(max(image.size))
-    new_size = tuple(int(dim * ratio) for dim in image.size)
-    return image.resize(new_size, Image.Resampling.LANCZOS)
+def is_origin_allowed(origin):
+    """Return True if the origin is allowed to access the API."""
+    allowed_exact = [
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "capacitor://localhost",
+        "file://",
+    ]
+    if origin in allowed_exact:
+        return True
 
-def process_ocr(image_bytes):
-    """Run OCR on image bytes, with resizing and timing."""
-    try:
-        # Load image
-        img = Image.open(BytesIO(image_bytes)).convert('RGB')
-        original_size = img.size
-        logger.info(f"Original image size: {original_size}")
+    if origin:
+        # Allow any subdomain of asse.devtunnels.ms or render.com
+        if origin.endswith(".asse.devtunnels.ms") or origin.endswith(".render.com"):
+            return True
 
-        # Resize if too large
-        img = resize_image_if_needed(img)
-        if img.size != original_size:
-            logger.info(f"Resized to: {img.size}")
+    return False
 
-        # Run Tesseract
-        start_ocr = time.time()
-        text = pytesseract.image_to_string(img, config=TESSERACT_CONFIG)
-        ocr_time = time.time() - start_ocr
-        logger.info(f"OCR completed in {ocr_time:.2f}s, text length: {len(text)}")
-        return text, ocr_time
-    except Exception as e:
-        logger.exception("OCR processing failed")
-        raise
-
-# ---------------------------
-# Routes
-# ---------------------------
-@app.route('/health', methods=['GET'])
-def health():
-    """Simple health check – useful for keep‑alive pings."""
-    return jsonify({'status': 'ok', 'timestamp': time.time()})
+@app.after_request
+def add_cors_headers(response):
+    """Set CORS headers for every response."""
+    origin = request.headers.get('Origin')
+    if origin and is_origin_allowed(origin):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    return response
 
 @app.route('/ocr/nutrition', methods=['POST', 'OPTIONS'])
 def extract_nutrition():
-    """
-    Endpoint that accepts a base64 image and returns OCR text.
-    Handles CORS preflight automatically (due to flask_cors).
-    """
-    # Handle preflight manually if needed (flask_cors usually does it, but we keep it safe)
+    """Handle preflight OPTIONS request."""
     if request.method == 'OPTIONS':
+        # Preflight request – just return headers
         return '', 200
 
     # Log request metadata
@@ -153,7 +109,6 @@ def extract_nutrition():
     # Decode base64
     try:
         image_b64 = data['image']
-        # Remove potential data URL prefix (e.g., "data:image/jpeg;base64,")
         if ',' in image_b64:
             image_b64 = image_b64.split(',', 1)[1]
         image_bytes = base64.b64decode(image_b64)
@@ -167,17 +122,36 @@ def extract_nutrition():
         text, ocr_time = process_ocr(image_bytes)
         return jsonify({
             'ocrText': text,
-            'confidence': 0.9,  # placeholder, you can compute real confidence later
+            'confidence': 0.9,
             'processingTime': ocr_time
         })
     except Exception as e:
         logger.exception("OCR failed")
         return jsonify({'error': 'OCR processing error'}), 500
 
-# ---------------------------
-# Run (for development only)
-# ---------------------------
+def process_ocr(image_bytes):
+    """Run OCR with resizing and timing."""
+    img = Image.open(BytesIO(image_bytes)).convert('RGB')
+    original_size = img.size
+    logger.info(f"Original image size: {original_size}")
+
+    # Resize if too large
+    if max(img.size) > MAX_IMAGE_PIXELS:
+        ratio = MAX_IMAGE_PIXELS / float(max(img.size))
+        new_size = tuple(int(dim * ratio) for dim in img.size)
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        logger.info(f"Resized to: {img.size}")
+
+    start_ocr = time.time()
+    text = pytesseract.image_to_string(img, config=TESSERACT_CONFIG)
+    ocr_time = time.time() - start_ocr
+    logger.info(f"OCR completed in {ocr_time:.2f}s, text length: {len(text)}")
+    return text, ocr_time
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({'status': 'ok', 'timestamp': time.time()})
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
-    # Use threaded=True to handle multiple requests concurrently
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
