@@ -22,7 +22,19 @@ TESSERACT_CONFIG = r'--oem 3 --psm 6'
 
 @app.route('/ocr/nutrition', methods=['POST'])
 def extract_nutrition():
-    data = request.get_json()
+    # Log raw request data for debugging
+    logging.info("Headers: %s", request.headers)
+    logging.info("Content-Type: %s", request.content_type)
+
+    # Try to get JSON data; if fails, log error and return 400
+    try:
+        data = request.get_json(force=True)  # force=True to parse even if Content-Type is not application/json
+    except Exception as e:
+        logging.exception("Failed to parse JSON")
+        return jsonify({'error': 'Invalid JSON'}), 400
+
+    logging.info("Received data keys: %s", data.keys() if data else "None")
+
     if not data or 'image' not in data:
         return jsonify({'error': 'No image provided'}), 400
 
